@@ -203,6 +203,7 @@ class ReActAgent:
         # 设置最大循环次数，防止无限循环
         max_steps = 30
         step = 0
+        format_error_count = 0
 
         # ReAct 主循环
         while True:
@@ -219,30 +220,59 @@ class ReActAgent:
 
             # 解析 Thought（思考过程）
             # Thought 是模型的推理过程，帮助理解其决策逻辑
-            thought_match = re.search(r"<thought>(.*?)</thought>", content, re.DOTALL)
-            if thought_match:
-                print(f"\n\n💭 Thought: {thought_match.group(1)}")
+            thought_text = self._extract_tag_content(content, "thought")
+            if thought_text:
+                print(f"\n\n💭 Thought: {thought_text}")
 
             # 检查 Final Answer（最终答案）
             # 如果模型输出了 Final Answer，表示任务完成
-            final_match = re.search(r"<final_answer>(.*?)</final_answer>", content, re.DOTALL)
-            if final_match:
+            final_text = self._extract_tag_content(content, "final_answer")
+            if final_text is not None:
                 # 保存当前会话历史，供后续 continue_session 使用
                 self.session_messages = messages
-                return final_match.group(1)
+                return final_text
 
             # 解析 Action（行动）
             # Action 指定了要调用的工具及其参数
-            action_match = re.search(r"<action>(.*?)</action>", content, re.DOTALL)
-            if not action_match:
-                # 如果没有 Action 且没有 Final Answer，说明模型输出格式错误
-                raise RuntimeError("模型未输出 <action>")
+            raw_action = self._extract_tag_content(content, "action")
+            if raw_action is None:
+                raw_action = self._extract_action_fallback(content)
+                if raw_action:
+                    self._debug("action recovered from fallback parser")
+                else:
+                    format_error_count += 1
+                    preview = content[:240].replace("\n", "\\n")
+                    if format_error_count >= 3:
+                        raise RuntimeError(f"模型连续未输出 <action>（已重试 3 次）。最近响应片段：{preview}")
+                    observation = (
+                        "输出格式错误：未检测到 <action> 或 <final_answer>。"
+                        "请严格返回 XML 标签，并在本轮只输出一个 <action> 或 <final_answer>。"
+                    )
+                    self._debug(f"missing_action_retry preview={preview}")
+                    print(f"\n\n📳 Observation: {observation}")
+                    messages.append({"role": "user", "content": f"<observation>{observation}</observation>"})
+                    continue
 
-            raw_action = action_match.group(1)
+            format_error_count = 0
             self._debug(f"raw_action={raw_action}")
             
             # 解析 Action 字符串为工具名和参数
-            tool_name, args = self.parse_action(raw_action)
+            try:
+                tool_name, args = self.parse_action(raw_action)
+            except Exception as e:
+                format_error_count += 1
+                if format_error_count >= 3:
+                    raise RuntimeError(f"Action 解析连续失败（已重试 3 次）：{e}")
+                observation = (
+                    f"Action 解析失败：{e}。"
+                    "请仅输出 <action>tool_name(arg1, ...)</action>，不要附加多余文本。"
+                )
+                self._debug(f"parse_action_failed raw_action={raw_action}")
+                print(f"\n\n📳 Observation: {observation}")
+                messages.append({"role": "user", "content": f"<observation>{observation}</observation>"})
+                continue
+
+            format_error_count = 0
             self._debug(f"parsed_action tool={tool_name}, args={args}")
             print(f"\n\n🔧 Action: {tool_name}({', '.join(map(str, args))})")
 
@@ -303,6 +333,34 @@ class ReActAgent:
             
             # 将 Observation 添加到消息历史，供模型下一轮参考
             messages.append({"role": "user", "content": f"<observation>{observation}</observation>"})
+
+    def _extract_tag_content(self, content: str, tag: str) -> str | None:
+        """Extract XML-like tag content with a tolerant regex."""
+        pattern = rf"<\s*{re.escape(tag)}\s*>(.*?)</\s*{re.escape(tag)}\s*>"
+        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
+        if not match:
+            return None
+        value = match.group(1).strip()
+        return value if value else None
+
+    def _extract_action_fallback(self, content: str) -> str | None:
+        """
+        Recover a likely tool call when model forgot XML tags.
+        Returns a function-call string like: read_file("...").
+        """
+        if not self.tools:
+            return None
+
+        tool_names = sorted(self.tools.keys(), key=len, reverse=True)
+        tool_union = "|".join(re.escape(name) for name in tool_names)
+        pattern = rf"\b({tool_union})\s*\(([\s\S]*?)\)"
+        match = re.search(pattern, content, re.IGNORECASE)
+        if not match:
+            return None
+
+        tool = match.group(1)
+        args = match.group(2).strip()
+        return f"{tool}({args})"
 
     def get_tool_list(self) -> str:
         """
