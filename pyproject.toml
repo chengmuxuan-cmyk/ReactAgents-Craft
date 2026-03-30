@@ -1,0 +1,12 @@
+﻿[project]
+name = "my-project"
+version = "0.1.0"
+description = "A CLI ReAct Agent with OpenRouter and DeepSeek support"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "requests>=2.33.0",
+    "click>=8.1.7",
+    "python-dotenv>=1.0.0",
+    "openai>=1.0.0",
+]

@@ -1,0 +1,26 @@
+{
+  "whitelist": [
+    "python",
+    "python3",
+    "py",
+    "uv",
+    "pytest",
+    "pip",
+    "pip3",
+    "node",
+    "npm"
+  ],
+  "dangerous_patterns": [
+    " rm ",
+    "del ",
+    "rmdir ",
+    "format ",
+    "mkfs",
+    "shutdown",
+    "reboot",
+    "powershell -enc",
+    "curl ",
+    "wget ",
+    "invoke-webrequest"
+  ]
+}
